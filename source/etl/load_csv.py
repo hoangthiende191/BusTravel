@@ -1,4 +1,4 @@
-﻿"""
+"""
 load_csv.py - Load layer for the BusTravel ETL pipeline.
 
 """
@@ -16,6 +16,7 @@ from clean import (
     build_routes,
     build_buses,
     build_directions,
+    build_schedule_patterns,
     clean_stops,
     clean_trips,
     clean_trip_stops,
@@ -66,10 +67,11 @@ def main():
     stops    = clean_stops()
     trips    = clean_trips()
     valid_ids = set(trips["trip_id"])
-    t_stops  = clean_trip_stops(valid_ids)
-    t_segs   = clean_trip_segments(valid_ids)
+    tripstops_cleaned  = clean_trip_stops(valid_ids)
+    tripsegment_cleaned   = clean_trip_segments(valid_ids)
 
     directions = build_directions()
+    patterns   = build_schedule_patterns(trips, tripstops_cleaned)
 
     # 2. Connect and upsert in FK dependency order inside ONE transaction
     conn = connectDB()
@@ -97,6 +99,14 @@ def main():
                     _rows(directions, list(directions.columns)),
                     ["direction_id", "route_id"])
 
+            # --- Tier 2b: depends on routes, directions, stops ---
+            _upsert(cur, "schedule_patterns",
+                    ["route_id", "direction_id", "stop_id", "stop_sequence", 
+                     "scheduled_arrival_offset_s", "scheduled_departure_offset_s"],
+                    _rows(patterns, ["route_id", "direction_id", "stop_id", "stop_sequence", 
+                                     "scheduled_arrival_offset_s", "scheduled_departure_offset_s"]),
+                    ["route_id", "direction_id", "stop_id"])
+
             # --- Tier 3: depends on buses, routes, directions, stops ---
             _upsert(cur, "trips",
                     ["trip_id", "device_id", "route_id", "direction_id",
@@ -110,13 +120,13 @@ def main():
             # --- Tier 4: depends on trips and stops ---
             _upsert(cur, "trip_stops",
                     ["trip_id", "stop_id", "arrival_time", "departure_time", "dwell_time_seconds"],
-                    _rows(t_stops, ["trip_id", "stop_id", "arrival_time", "departure_time", "dwell_time_seconds"]),
+                    _rows(tripstops_cleaned, ["trip_id", "stop_id", "arrival_time", "departure_time", "dwell_time_seconds"]),
                     ["trip_id", "stop_id"])
 
             _upsert(cur, "trip_segments",
                     ["trip_id", "segment_no", "start_stop_id", "end_stop_id",
                      "start_time", "end_time", "run_time_seconds", "distance_km"],
-                    _rows(t_segs, ["trip_id", "segment_no", "start_stop_id", "end_stop_id",
+                    _rows(tripsegment_cleaned, ["trip_id", "segment_no", "start_stop_id", "end_stop_id",
                                    "start_time", "end_time", "run_time_seconds", "distance_km"]),
                     ["trip_id", "segment_no"])
 
@@ -131,9 +141,11 @@ def main():
 
     print("\n--- Load complete ---")
     print(f"  trips      : {len(trips):>7,}")
-    print(f"  trip_stops : {len(t_stops):>7,}")
-    print(f"  trip_segs  : {len(t_segs):>7,}")
+    print(f"  trip_stops : {len(tripstops_cleaned):>7,}")
+    print(f"  trip_segs  : {len(tripsegment_cleaned):>7,}")
+    print(f"  schedules  : {len(patterns):>7,}")
 
 
 if __name__ == "__main__":
     main()
+

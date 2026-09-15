@@ -115,3 +115,27 @@ CREATE TABLE trip_stops (
     FOREIGN KEY (stop_id)
         REFERENCES stops(stop_id)
 );
+
+
+
+
+CREATE TABLE schedule_patterns (
+    route_id                     INTEGER     NOT NULL,
+    direction_id                 SMALLINT    NOT NULL,
+    stop_id                      VARCHAR(20) NOT NULL,
+
+    
+    stop_sequence                INTEGER     NOT NULL,
+
+    -- Số giây kể từ trip.start_time 
+    scheduled_arrival_offset_s   INTEGER     NOT NULL,
+    scheduled_departure_offset_s INTEGER     NOT NULL,
+
+    PRIMARY KEY (route_id, direction_id, stop_id),
+
+    FOREIGN KEY (route_id)
+        REFERENCES routes(route_id),
+
+    FOREIGN KEY (stop_id)
+        REFERENCES stops(stop_id)
+);

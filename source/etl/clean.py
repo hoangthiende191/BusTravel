@@ -265,22 +265,65 @@ def build_directions():
     ], columns=["direction_id", "route_id", "direction_name", "start_terminal_id", "end_terminal_id"])
 
 
-# ---------------------------------------------------------------------------
-# Entry point (standalone validation without DB write)
-# ---------------------------------------------------------------------------
+def build_schedule_patterns(trips_df, trip_stops_df):
+    """
+    Computes scheduled offsets based on median values from historical data.
+    Takes cleaned trips_df and trip_stops_df, avoiding re-parsing raw CSVs.
+    """
+    log.info("Computing schedule patterns from clean data...")
+    merged = pd.merge(
+        trip_stops_df[["trip_id", "stop_id", "arrival_time", "departure_time"]],
+        trips_df[["trip_id", "direction_id", "start_time"]],
+        on="trip_id",
+        how="inner"
+    )
 
-if __name__ == "__main__":
-    stops     = clean_stops()
-    trips     = clean_trips()
-    valid_ids = set(trips["trip_id"])
-    t_stops   = clean_trip_stops(valid_ids)
-    t_segs    = clean_trip_segments(valid_ids)
+    def time_to_seconds(time_series):
+        return pd.to_timedelta(time_series.astype(str)).dt.total_seconds()
 
-    print("\n--- Summary ---")
-    print(f"  routes     : {len(build_routes())} row(s)")
-    print(f"  buses      : {len(build_buses(trips))} unique devices")
-    print(f"  stops      : {len(stops)}")
-    print(f"  directions : {len(build_directions())}")
-    print(f"  trips      : {len(trips)}")
-    print(f"  trip_stops : {len(t_stops)}")
-    print(f"  trip_segs  : {len(t_segs)}")
+    start_sec = time_to_seconds(merged["start_time"])
+    arr_sec   = time_to_seconds(merged["arrival_time"])
+    dep_sec   = time_to_seconds(merged["departure_time"])
+
+    
+    arr_offset = arr_sec - start_sec
+    arr_offset = arr_offset.apply(lambda x: x + 86400 if x < -43200 else x)
+    
+    dep_offset = dep_sec - start_sec
+    dep_offset = dep_offset.apply(lambda x: x + 86400 if x < -43200 else x)
+
+    merged["arrival_offset_s"]   = arr_offset
+    merged["departure_offset_s"] = dep_offset
+
+    bad = (merged["arrival_offset_s"] < 0) | (merged["departure_offset_s"] < 0)
+    if bad.sum():
+        log.warning("build_schedule_patterns: dropping %d rows with negative offsets", bad.sum())
+    merged = merged[~bad]
+
+    pattern = (
+        merged
+        .groupby(["direction_id", "stop_id"], as_index=False)
+        .agg(
+            scheduled_arrival_offset_s   = ("arrival_offset_s",   "median"),
+            scheduled_departure_offset_s = ("departure_offset_s", "median"),
+        )
+    )
+
+    pattern["scheduled_arrival_offset_s"]   = pattern["scheduled_arrival_offset_s"].round().astype(int)
+    pattern["scheduled_departure_offset_s"] = pattern["scheduled_departure_offset_s"].round().astype(int)
+
+    pattern["stop_sequence"] = (
+        pattern
+        .groupby("direction_id")["scheduled_arrival_offset_s"]
+        .rank(method="first")
+        .astype(int)
+    )
+
+    pattern["route_id"] = ROUTE_ID
+
+    return pattern[[
+        "route_id", "direction_id", "stop_id", "stop_sequence",
+        "scheduled_arrival_offset_s", "scheduled_departure_offset_s"
+    ]]
+
+
